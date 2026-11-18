@@ -90,7 +90,13 @@
   .btn { padding: 14px 22px; border-radius: 14px; background: #2a2a2e; font-weight: 650; font-size: 17px; }
   .btn.primary { background: var(--red); }
   .btn:active { transform: scale(.98); }
-  #playback { width: min(900px, 100%); max-height: 62vh; border-radius: 14px; background: #000; }
+  #playback { width: min(900px, 100%); max-height: 56vh; border-radius: 14px; background: #000; }
+  #upBox { width: min(520px, 100%); display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .progress { width: 100%; height: 8px; background: #2a2a2e; border-radius: 99px; overflow: hidden; }
+  .progress i { display: block; height: 100%; width: 0; background: var(--red); transition: width .25s; }
+  #upBox.done .progress i { background: #30d158; }
+  #upMsg a { color: #fff; font-weight: 650; }
+  .btn:disabled { opacity: .45; }
   .small { font-size: 14px; color: var(--muted); }
 
   @media (max-width: 700px) {
@@ -130,6 +136,7 @@
   <label>Darken behind text</label><input type="range" id="dimR" min="0" max="0.9" step="0.05">
   <div class="row"><span>3-second countdown</span><input type="checkbox" id="cdChk"></div>
   <div class="row"><span>Start scrolling when recording starts</span><input type="checkbox" id="autoChk"></div>
+  <div class="row" id="autoUpRow" hidden><span>Upload each take to Google Drive automatically</span><input type="checkbox" id="autoUpChk"></div>
   <div class="row"><button class="btn" id="fsBtn" style="flex:1">Full screen</button><button class="btn" id="edit2Btn" style="flex:1">Edit text</button></div>
 </div>
 
@@ -145,12 +152,15 @@
   <h2>Take <span id="takeNo">1</span></h2>
   <video id="playback" controls playsinline></video>
   <p class="small" id="takeInfo"></p>
+  <div id="upBox" hidden><div class="progress"><i id="upBar"></i></div><p class="small" id="upMsg"></p></div>
   <div class="btns">
+    <button class="btn primary" id="upBtn" hidden>Upload to Google Drive</button>
     <button class="btn primary" id="shareBtn">Save video…</button>
     <a class="btn" id="dlBtn" style="text-decoration:none;color:#fff">Download</a>
     <button class="btn" id="againBtn">Record again</button>
   </div>
   <p class="small" id="saveHint">“Save video…” opens the share sheet — choose <b>Save Video</b> for Photos or <b>Save to Files</b>.</p>
+  <p class="small" id="driveHint" hidden>To upload to Google Drive, open this page with the Record button in the Teleprompter app and keep that tab open.</p>
 </div>
 
 <div class="screen" id="msgScr" hidden>
@@ -167,7 +177,7 @@
   var FAKE = params.has('fake'); // test mode: synthetic camera, for checking the page without a real camera
 
   // ---------- settings (per-device convenience only) ----------
-  var S = { speed: 5, fs: window.innerWidth < 700 ? 34 : 48, width: 80, dim: 0.55, countdown: true, autoScroll: true };
+  var S = { speed: 5, fs: window.innerWidth < 700 ? 34 : 48, width: 80, dim: 0.55, countdown: true, autoScroll: true, autoUpload: false };
   try { Object.assign(S, JSON.parse(localStorage.getItem('tp.settings') || '{}')); } catch (e) {}
   function persist() { try { localStorage.setItem('tp.settings', JSON.stringify(S)); } catch (e) {} }
 
@@ -209,7 +219,7 @@
     $('speedVal').textContent = S.speed;
     $('sizeVal').textContent = S.fs;
     $('sizeR').value = S.fs; $('widthR').value = S.width; $('dimR').value = S.dim;
-    $('cdChk').checked = S.countdown; $('autoChk').checked = S.autoScroll;
+    $('cdChk').checked = S.countdown; $('autoChk').checked = S.autoScroll; $('autoUpChk').checked = S.autoUpload;
     measure();
   }
   function measure() {
@@ -348,7 +358,7 @@
     if (mime === null) { state = 'ready'; setUi(); return showMsg('Recording not supported', 'This browser can’t record video. Update iPadOS, or use Safari.'); }
     chunks = [];
     try {
-      recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 8000000 } : undefined);
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: 5000000 } : undefined);
     } catch (e) {
       try { recorder = new MediaRecorder(stream); } catch (e2) { state = 'ready'; setUi(); return showMsg('Recording failed', e2.message); }
     }
@@ -382,7 +392,14 @@
     $('dlBtn').download = fileName();
     var canShare = canShareFile();
     $('shareBtn').hidden = !canShare; $('saveHint').hidden = !canShare;
+    $('upBox').hidden = true; $('upBtn').textContent = 'Upload to Google Drive'; $('upBtn').hidden = true; $('driveHint').hidden = true;
     state = 'review'; setUi();
+    checkDrive().then(function () {
+      $('upBtn').hidden = !drive.ok; $('driveHint').hidden = drive.ok;
+      $('shareBtn').classList.toggle('primary', !drive.ok);
+      setReviewButtons();
+      if (drive.ok && S.autoUpload) uploadTake();
+    });
   }
   function fileName() {
     var ext = /webm/.test(lastBlob.type) ? 'webm' : 'mp4';
@@ -393,6 +410,96 @@
   function takeFile() { return new File([lastBlob], fileName(), { type: lastBlob.type }); }
   function canShareFile() {
     try { return !!(navigator.canShare && navigator.share && navigator.canShare({ files: [takeFile()] })); } catch (e) { return false; }
+  }
+
+  // ---------- Google Drive upload ----------
+  // This page has no Google sign-in. The Teleprompter app tab that opened it (window.opener) runs as the
+  // signed-in account; we message it to start a Drive upload, then send the bytes to Drive directly, or
+  // through the app tab in 4 MB pieces if Drive won't accept them from this site.
+  var drive = { ok: false, origin: '*' }, pending = {}, seq = 0, uploading = false;
+  function isAppOrigin(o) { try { return /\.googleusercontent\.com$/.test(new URL(o).hostname); } catch (e) { return false; } }
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (!isAppOrigin(e.origin) || !d || !d.id || !pending[d.id]) return;
+    var cb = pending[d.id]; delete pending[d.id]; cb(d, e.origin);
+  });
+  function ask(msg, ms) {
+    return new Promise(function (resolve, reject) {
+      var w = window.opener;
+      if (!w || w.closed) return reject(new Error('The Teleprompter app tab is closed.'));
+      var id = 'm' + (++seq) + '-' + Date.now(); msg.id = id;
+      var t = setTimeout(function () { delete pending[id]; reject(new Error('The Teleprompter app tab didn’t answer.')); }, ms || 8000);
+      pending[id] = function (d, origin) { clearTimeout(t); if (d.error) reject(new Error(d.error)); else resolve({ d: d, origin: origin }); };
+      try { w.postMessage(msg, drive.origin); } catch (err) { clearTimeout(t); delete pending[id]; reject(err); }
+    });
+  }
+  function checkDrive() {
+    return ask({ type: 'tp-ping' }, 4000).then(function (r) { drive.ok = true; drive.origin = r.origin; }, function () { drive.ok = false; })
+      .then(function () { $('autoUpRow').hidden = !drive.ok; });
+  }
+  function blobToB64(b) {
+    return new Promise(function (res, rej) {
+      var fr = new FileReader();
+      fr.onload = function () { res(String(fr.result).split(',')[1] || ''); };
+      fr.onerror = function () { rej(fr.error); };
+      fr.readAsDataURL(b);
+    });
+  }
+  function mb(n) { return (n / 1048576).toFixed(1); }
+  function upShow(frac, html, done) {
+    $('upBox').hidden = false; $('upBox').classList.toggle('done', !!done);
+    $('upBar').style.width = Math.round(frac * 100) + '%';
+    $('upMsg').innerHTML = html;
+  }
+  function uploadTake() {
+    if (uploading || !lastBlob) return;
+    uploading = true; setReviewButtons();
+    var file = takeFile(), total = file.size, offset = 0, direct = true, result = null, folderUrl = '';
+    upShow(0, 'Connecting to Google Drive…');
+    var sess;
+    ask({ type: 'tp-session', name: file.name, mime: file.type || 'video/mp4', size: total, title: doc.t }, 30000)
+      .then(function (r) { sess = r.d; folderUrl = sess.folderUrl; return next(); })
+      .then(function () {
+        uploading = false; savedLast = true;
+        var link = (result && result.webViewLink) || folderUrl;
+        upShow(1, 'Uploaded to Google Drive ✓ &nbsp;<a href="' + link + '" target="_blank" rel="noopener">Open</a>', true);
+        $('upBtn').hidden = true; setReviewButtons();
+      })
+      .catch(function (err) {
+        uploading = false;
+        upShow(total ? offset / total : 0, 'Upload stopped: ' + esc(err.message || String(err)) + '<br>Your take is still here — tap Upload to try again, or use Save video….');
+        $('upBtn').textContent = 'Try upload again'; setReviewButtons();
+      });
+
+    function next() {
+      if (offset >= total) return Promise.resolve();
+      var size = direct ? 8 * 1048576 : 4 * 1048576; // multiples of 256 KB, as Drive requires
+      var end = Math.min(offset + size, total), piece = file.slice(offset, end);
+      upShow(offset / total, 'Uploading… ' + Math.round(offset / total * 100) + '% (' + mb(offset) + ' of ' + mb(total) + ' MB)<br>Keep this tab open.');
+      var step = direct
+        ? fetch(sess.url, { method: 'PUT', headers: { 'Content-Range': 'bytes ' + offset + '-' + (end - 1) + '/' + total }, body: piece })
+            .then(function (res) {
+              if (res.status === 200 || res.status === 201) return res.json().catch(function () { return null; }).then(function (j) { result = j; return res.status; });
+              return res.status;
+            }, function (err) {
+              if (offset === 0) { direct = false; return 'relay'; } // Drive blocked this site; go through the app tab
+              throw err;
+            })
+        : blobToB64(piece).then(function (b64) {
+            return ask({ type: 'tp-chunk', url: sess.url, b64: b64, start: offset, end: end, total: total }, 180000)
+              .then(function (r) { if (r.d.file) result = r.d.file; return r.d.status; });
+          });
+      return step.then(function (status) {
+        if (status === 'relay') return next();
+        if (status === 308 || status === 200 || status === 201) { offset = end; return next(); }
+        throw new Error('Drive returned ' + status + '.');
+      });
+    }
+  }
+  function setReviewButtons() {
+    $('upBtn').disabled = uploading;
+    $('againBtn').disabled = uploading;
+    if (uploading) $('upBtn').textContent = 'Uploading…';
   }
 
   // ---------- UI state ----------
@@ -443,6 +550,8 @@
   $('dimR').addEventListener('input', function () { S.dim = +this.value; persist(); applyStyle(); });
   $('cdChk').addEventListener('change', function () { S.countdown = this.checked; persist(); });
   $('autoChk').addEventListener('change', function () { S.autoScroll = this.checked; persist(); });
+  $('autoUpChk').addEventListener('change', function () { S.autoUpload = this.checked; persist(); });
+  $('upBtn').addEventListener('click', uploadTake);
   var fsEl = document.documentElement;
   var fsReq = fsEl.requestFullscreen || fsEl.webkitRequestFullscreen;
   if (!fsReq) $('fsBtn').hidden = true;
@@ -466,6 +575,7 @@
   });
   $('dlBtn').addEventListener('click', function () { savedLast = true; });
   $('againBtn').addEventListener('click', function () {
+    if (uploading) return;
     if (!savedLast && !confirm('This take hasn’t been saved. Throw it away and record again?')) return;
     $('playback').pause(); setPos(0); state = 'ready'; savedLast = true; setUi();
   });
@@ -481,11 +591,12 @@
   });
   window.addEventListener('resize', measure);
   window.addEventListener('beforeunload', function (e) {
-    if (state === 'recording' || (!savedLast && lastBlob)) { e.preventDefault(); e.returnValue = ''; }
+    if (state === 'recording' || uploading || (!savedLast && lastBlob)) { e.preventDefault(); e.returnValue = ''; }
   });
   window.addEventListener('hashchange', function () { var d = readHash(); if (d && state !== 'recording') useDoc(d); });
 
   applyStyle();
+  checkDrive();
   requestAnimationFrame(frame);
   var d = readHash();
   if (d && d.s.trim()) useDoc(d); else showPaste(false);
