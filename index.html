@@ -7,7 +7,11 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#000000">
 <meta name="robots" content="noindex">
-<title>Teleprompter</title>
+<title>Porta Prompter</title>
+<link rel="icon" type="image/svg+xml" href="icon.svg">
+<link rel="icon" type="image/png" sizes="64x64" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Porta Prompter">
 <style>
   :root {
     --fs: 48px; --dim: .55; --width: 80%;
@@ -142,7 +146,7 @@
 
 <div class="screen" id="pasteScr" hidden>
   <h2>What do you want to say?</h2>
-  <p id="pasteNote">Paste a script, or open this page from the Record button in your Teleprompter app.</p>
+  <p id="pasteNote">Paste a script, or open this page from the Record button in Porta Prompter.</p>
   <input id="titleIn" placeholder="Title (used for the video's file name)">
   <textarea id="scriptIn" placeholder="Type or paste your script here…"></textarea>
   <div class="btns"><button class="btn" id="pasteCancel" hidden>Cancel</button><button class="btn primary" id="pasteGo">Use this script</button></div>
@@ -160,7 +164,7 @@
     <button class="btn" id="againBtn">Record again</button>
   </div>
   <p class="small" id="saveHint">“Save video…” opens the share sheet — choose <b>Save Video</b> for Photos or <b>Save to Files</b>.</p>
-  <p class="small" id="driveHint" hidden>To upload to Google Drive, open this page with the Record button in the Teleprompter app and keep that tab open.</p>
+  <p class="small" id="driveHint" hidden>To upload to Google Drive, open this page with the Record button in Porta Prompter and keep that tab open.</p>
 </div>
 
 <div class="screen" id="msgScr" hidden>
@@ -206,7 +210,7 @@
       var h = esc(p).replace(/\[([^\]]*)\]/g, '<span class="cue">[$1]</span>').replace(/\n/g, '<br>');
       return '<p>' + h + '</p>';
     }).join('');
-    document.title = doc.t + ' · Teleprompter';
+    document.title = doc.t + ' · Porta Prompter';
     measure();
   }
 
@@ -413,7 +417,7 @@
   }
 
   // ---------- Google Drive upload ----------
-  // This page has no Google sign-in. The Teleprompter app tab that opened it (window.opener) runs as the
+  // This page has no Google sign-in. The Porta Prompter tab that opened it (window.opener) runs as the
   // signed-in account; we message it to start a Drive upload, then send the bytes to Drive directly, or
   // through the app tab in 4 MB pieces if Drive won't accept them from this site.
   var drive = { ok: false, origin: '*' }, pending = {}, seq = 0, uploading = false;
@@ -426,9 +430,9 @@
   function ask(msg, ms) {
     return new Promise(function (resolve, reject) {
       var w = window.opener;
-      if (!w || w.closed) return reject(new Error('The Teleprompter app tab is closed.'));
+      if (!w || w.closed) return reject(new Error('The Porta Prompter tab is closed.'));
       var id = 'm' + (++seq) + '-' + Date.now(); msg.id = id;
-      var t = setTimeout(function () { delete pending[id]; reject(new Error('The Teleprompter app tab didn’t answer.')); }, ms || 8000);
+      var t = setTimeout(function () { delete pending[id]; reject(new Error('The Porta Prompter tab didn’t answer.')); }, ms || 8000);
       pending[id] = function (d, origin) { clearTimeout(t); if (d.error) reject(new Error(d.error)); else resolve({ d: d, origin: origin }); };
       try { w.postMessage(msg, drive.origin); } catch (err) { clearTimeout(t); delete pending[id]; reject(err); }
     });
@@ -525,7 +529,7 @@
     $('pasteCancel').hidden = !doc.s;
     $('pasteNote').textContent = fromEdit
       ? 'Changes here are for this recording only — they aren’t saved back to your Sheet.'
-      : 'Paste a script, or open this page from the Record button in your Teleprompter app.';
+      : 'Paste a script, or open this page from the Record button in Porta Prompter.';
     $('pasteScr').hidden = false;
     $('settings').hidden = true;
   }
